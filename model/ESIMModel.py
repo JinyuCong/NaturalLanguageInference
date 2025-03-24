@@ -5,33 +5,26 @@ from torch.utils.data import Dataset, DataLoader
 
 
 class TextDataset(Dataset):
-    def __init__(self, raw_data, seq_len):
+    def __init__(self, raw_data, word_2_index, seq_len):
         self.raw_data = raw_data
         self.seq_len = seq_len
-        self.vocab = self._build_vocab()
-        self.word_2_index = {word: index + 1 for index, word in enumerate(self.vocab)}
-        self.word_2_index.update({"<PAD>": 0})
-        self.index_2_word = {index + 1: word for index, word in enumerate(self.vocab)}
-        self.index_2_word.update({0: "<PAD>"})
+        self.word_2_index = word_2_index
+        self.index_2_word = {index: word for word, index in self.word_2_index.items()}
         self.label_mapping = {"neutral": 0, "entailment": 1, "contradiction": 2}
         self.data = self._build_corpus()
 
-    def _build_vocab(self):
-        all_text = ""
-        for nli_pair in self.raw_data:
-            all_text += nli_pair[0].lower() + " "
-            all_text += nli_pair[1].lower() + " "
-        return sorted(set(all_text.split()))
-
     def _build_corpus(self):
         data = []
-        for nli_pair in self.raw_data:
-            premise, hypothesis = nli_pair[0].lower(), nli_pair[1].lower()
-            premise_index = [self.word_2_index[word_premise] for word_premise in premise.split()]
+        for premise, hypothesis, label in self.raw_data:
+            premise, hypothesis, label = premise.lower(), hypothesis.lower(), label.lower()
+
+            premise_index = [self.word_2_index.get(word_premise, 1) for word_premise in premise.split()[:self.seq_len]]
             premise_index += [0 for _ in range(self.seq_len - len(premise_index))]
-            hypothesis_index = [self.word_2_index[word_hypothesis] for word_hypothesis in hypothesis.split()]
+
+            hypothesis_index = [self.word_2_index.get(word_hypothesis, 1) for word_hypothesis in hypothesis.split()[:self.seq_len]]
             hypothesis_index += [0 for _ in range(self.seq_len - len(hypothesis_index))]
-            label_index = self.label_mapping[nli_pair[2]]
+
+            label_index = self.label_mapping[label]
             data.append((premise_index, hypothesis_index, label_index))
         return data
 
@@ -52,6 +45,7 @@ class ESIMModel(nn.Module):
         self.encoder = nn.LSTM(input_size=embedding_dim, hidden_size=hidden_size, bidirectional=True)
         self.inference_encoder = nn.LSTM(hidden_size * 8, hidden_size, bidirectional=True)
         self.fc = nn.Linear(hidden_size * 8, 3)  # 3分类
+        self.act = nn.Tanh()
 
     def forward(self, premise, hypothesis):
         a_emb = self.embedding(premise)  # (batch_size, seq_len, emb_dim)
@@ -75,5 +69,5 @@ class ESIMModel(nn.Module):
         v = torch.cat([v_a, v_b], dim=1)
 
         # 预测
-        logits = self.fc(v)
+        logits = self.act(self.fc(v))
         return logits

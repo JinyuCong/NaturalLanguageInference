@@ -3,8 +3,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from dataset import TextDataset
-from models import DecomposableAttentionModel, ESIMModel
+from models import LSTMAttentionEntailment
 import spacy
+import numpy as np
 
 nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
 
@@ -45,7 +46,7 @@ def build_raw_data(jsonl_path: str, batch_size: int = 1000):
     return raw_data
 
 
-def build_word_2_index(raw_data: list[tuple]) -> tuple[dict[str, int], int]:
+def build_word_2_index(raw_data: list[tuple]) -> dict[str, int]:
     """
     Build the word to index dictionary
     param:
@@ -64,19 +65,20 @@ def build_word_2_index(raw_data: list[tuple]) -> tuple[dict[str, int], int]:
         for word in tokenized_hypothesis:
             word_2_index[word.text] = word_2_index.get(word.text, len(word_2_index))
 
-    vocab_size = len(word_2_index)
-    return word_2_index, vocab_size
+    return word_2_index
 
 
 raw_data = build_raw_data("../data/snli_1.0/snli_1.0_dev.jsonl")
-word_2_index, vocab_size = build_word_2_index(raw_data)
+word_2_index = build_word_2_index(raw_data)
+vocab_size = len(word_2_index)
 
 train_data = raw_data[:int(len(raw_data)*0.8)]
 test_data = raw_data[int(len(raw_data)*0.8):]
 
 batch_size = 32
 seq_len = 64
-emb_dim = 128
+emb_dim = 300
+proj_dim = 200
 hidden_size = 256
 epochs = 20
 learning_rate = 0.001
@@ -87,7 +89,7 @@ test_dataset = TextDataset(test_data, word_2_index, seq_len)
 train_loader = DataLoader(train_dataset, batch_size=batch_size)
 test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
-model = ESIMModel(vocab_size, emb_dim, hidden_size)
+model = LSTMAttentionEntailment(vocab_size, emb_dim, hidden_size, 3)
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -97,6 +99,7 @@ model.to(device)
 # first_data = train_dataset[0]
 # pre, hypo, label = first_data[0].unsqueeze(0), first_data[1].unsqueeze(0), first_data[2]
 # print(pre.shape, hypo.shape) (1, 64) (1, 64)
+
 for epoch in range(epochs):
     # Training phase
     model.train()

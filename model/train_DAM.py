@@ -1,11 +1,14 @@
+import os.path
 import jsonlines
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from models import ESIMModel, DecomposableAttentionModel
+from models import DecomposableAttentionModel
 from dataset import TextDataset
 import argparse
 import spacy
+import json
+import numpy as np
 
 nlp = spacy.load("en_core_web_sm", disable=["parser", "ner", "lemmatizer"])
 
@@ -71,7 +74,7 @@ def build_raw_data(jsonl_path: str, batch_size: int = 1000):
     return raw_data
 
 
-def build_word_2_index(raw_data: list[tuple]) -> tuple[dict[str, int], int]:
+def build_word_2_index(raw_data: list[tuple]) -> dict[str, int]:
     """
     Build the word to index dictionary.
     param:
@@ -90,8 +93,27 @@ def build_word_2_index(raw_data: list[tuple]) -> tuple[dict[str, int], int]:
         for word in tokenized_hypothesis:
             word_2_index[word.text] = word_2_index.get(word.text, len(word_2_index))
 
+    return word_2_index
+
+
+def build_embedding_matrix(glove_path: str, word_2_index: dict[str, int], embedding_dim=300):
     vocab_size = len(word_2_index)
-    return word_2_index, vocab_size
+
+    embedding_matrix = np.random.normal(0, 1, (vocab_size, embedding_dim))
+
+    with open(glove_path, encoding='utf-8') as f:
+        content = f.readlines()
+        for line in content:
+            values = line.strip().split()
+            word = values[0]
+            if word in word_2_index:
+                vector = np.array(values[1:], dtype=np.float32)
+                norm = np.linalg.norm(vector)
+                if norm > 0:
+                    vector = vector / norm
+                embedding_matrix[word_2_index[word]] = vector
+
+    return torch.tensor(embedding_matrix).to(torch.float)
 
 
 def train_with_early_stopping(
@@ -101,7 +123,7 @@ def train_with_early_stopping(
         optimizer,
         device: torch.device,
         epochs: int,
-        criterion,  # 新增：损失函数参数
+        criterion,
 ) -> None:
     """
     Train the model with early stopping, tracking train/test accuracy and loss.
@@ -175,12 +197,12 @@ def train_with_early_stopping(
 
 
 def main(
-        model_to_train: str,
         train_path: str,
         test_path: str,
         batch_size: int,
         sequence_length: int,
         embedding_dim: int,
+        projection_dim: int,
         hidden_size: int,
         epochs: int,
         learning_rate: float,
@@ -188,7 +210,17 @@ def main(
     train_data = build_raw_data(train_path)
     test_data = build_raw_data(test_path)
 
-    word_2_index, vocab_size = build_word_2_index(train_data + test_data)
+    if os.path.exists("./word_to_index.json"):
+        with open("./word_to_index.json", "r") as f:
+            word_2_index = json.load(f)
+            vocab_size = len(word_2_index)
+    else:
+        word_2_index = build_word_2_index(train_data + test_data)
+        vocab_size = len(word_2_index)
+        with open("word_to_index.json", "w", encoding='utf-8') as f:
+            json.dump(word_2_index, f)
+
+    glove_embedding_matrix = build_embedding_matrix("./glove.6B/glove.6B.300d.txt", word_2_index)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -200,10 +232,8 @@ def main(
 
     criterion = nn.CrossEntropyLoss()
 
-    if model_to_train == "ESIM":
-        model = ESIMModel(vocab_size, embedding_dim, hidden_size)
-    elif model_to_train == "DAM":
-        model = DecomposableAttentionModel(vocab_size, embedding_dim, hidden_size)
+    # define ESIM model
+    model = DecomposableAttentionModel(vocab_size, embedding_dim, projection_dim, hidden_size, glove_embedding_matrix)
 
     opt = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
@@ -211,13 +241,8 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Natural Language Inference models.")
+    parser = argparse.ArgumentParser(description="Train Decomposable Attention Natural Language Inference Model.")
 
-    parser.add_argument(
-        "model_to_train",
-        choices=["ESIM", "DAM"],
-        type=str
-    )
     parser.add_argument(
         "train_path",
         type=str,
@@ -247,7 +272,14 @@ if __name__ == "__main__":
         "--embedding_dim",
         type=int,
         help="Embedding dimension",
-        default=128
+        default=300
+    )
+    parser.add_argument(
+        "-p",
+        "--projection_dim",
+        type=int,
+        help="Projection dimension",
+        default=200
     )
     parser.add_argument(
         "-w",
@@ -273,23 +305,23 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    model = args.model_to_train
     train_path = args.train_path
     test_path = args.test_path
     batch_size = args.batch_size
     sequence_length = args.sequence_length
     embedding_dim = args.embedding_dim
+    projection_dim = args.projection_dim
     hidden_size = args.hidden_size
     epochs = args.epochs
     learning_rate = args.learning_rate
 
     main(
-        model,
         train_path,
         test_path,
         batch_size=batch_size,
         sequence_length=sequence_length,
         embedding_dim=embedding_dim,
+        projection_dim=projection_dim,
         hidden_size=hidden_size,
         epochs=epochs,
         learning_rate=learning_rate

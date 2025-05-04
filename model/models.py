@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import math
 
 
 class ESIMModel(nn.Module):
@@ -39,11 +38,15 @@ class ESIMModel(nn.Module):
 
 
 class DecomposableAttentionModel(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_size):
+    def __init__(self, vocab_size, embedding_dim, projected_dim, hidden_size, glove_embedding_matrix):
         super(DecomposableAttentionModel, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        # use the pretrained GloVe embedding matrix and freeze the learning
+        self.embedding = nn.Embedding.from_pretrained(glove_embedding_matrix, freeze=True)
+        # project the embedding matrix from dimension 300 to dimension 200
+        self.projection = nn.Linear(embedding_dim, projected_dim)
+
         self.F = nn.Sequential(
-            nn.Linear(embedding_dim, hidden_size),
+            nn.Linear(projected_dim, hidden_size),
             nn.ReLU(),
             nn.Dropout(0.2)
         )
@@ -58,8 +61,11 @@ class DecomposableAttentionModel(nn.Module):
         a_emb = self.embedding(premise)  # (batch_size, seq_len, emb_dim)
         b_emb = self.embedding(hypothesis)
 
-        a_bar = self.F(a_emb)  # (batch_size, seq_len, hidden_size)
-        b_bar = self.F(b_emb)
+        a_proj = self.projection(a_emb)  # (batch_size, seq_len, proj_dim)
+        b_proj = self.projection(b_emb)
+
+        a_bar = self.F(a_proj)  # (batch_size, seq_len, hidden_size)
+        b_bar = self.F(b_proj)
 
         attn = torch.matmul(a_bar, b_bar.transpose(1, 2))  # (batch_size, seq_len, seq_len)
 
@@ -74,3 +80,25 @@ class DecomposableAttentionModel(nn.Module):
         # classifier
         logits = self.classifier(torch.concat([v_1, v_2], dim=1))
         return logits
+
+
+'''
+if __name__ == "__main__":
+    # 假设参数
+    vocab_size = 10000
+    embed_dim = 300
+    hidden_size = 100
+    num_classes = 3  # 蕴含、中立、矛盾
+
+    # 初始化模型（可加载预训练词向量）
+    model = LSTMAttentionEntailment(vocab_size, embed_dim, hidden_size, num_classes)
+
+    # 模拟输入
+    batch_size = 32
+    premise = torch.randint(0, vocab_size, (batch_size, 20))  # 假设前提长度20
+    hypothesis = torch.randint(0, vocab_size, (batch_size, 15))  # 假设假设长度15
+
+    # 前向传播
+    logits = model(premise, hypothesis)
+    print(logits.shape)  # 输出: [32, 3]
+'''

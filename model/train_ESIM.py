@@ -1,15 +1,11 @@
-import os.path
-import jsonlines
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from models import ESIMModel
-from dataset import TextDataset
+from dataset import NLIDataset
+from datasets import load_dataset
+from transformers import AutoTokenizer
 import argparse
-import spacy
-import json
-
-nlp = spacy.load("en_core_web_sm", disable=["parser", "ner", "lemmatizer"])
 
 
 class EarlyStopping:
@@ -35,65 +31,6 @@ class EarlyStopping:
             self.best_val_acc = val_acc
             self.patience_counter = 0
             self.best_model_weights = self.model.state_dict().copy()
-
-
-def build_raw_data(jsonl_path: str, batch_size: int = 1000):
-    """
-    Read the jsonl file and preprocess the premise and hypothesis.
-    raw_data is like: [(this is the premise, this is the hypothesis, label)], every premise and hypothesis is tokenized by nlp
-    param:
-        jsonl_path: path to jsonl file
-    return:
-        raw_data: list of tuple, each tuple is (premise, hypothesis, label)
-    """
-    raw_data = []
-    premises, hypotheses, labels = [], [], []
-
-    with open(jsonl_path, "r", encoding='utf-8') as f:
-        for line in jsonlines.Reader(f):
-            if line["gold_label"] == "-":
-                continue
-            premises.append(line["sentence1"].lower())
-            hypotheses.append(line["sentence2"].lower())
-            labels.append(line["gold_label"])
-
-            # 批量处理
-            if len(premises) >= batch_size:
-                tokenized_prems = list(nlp.pipe(premises))
-                tokenized_hypos = list(nlp.pipe(hypotheses))
-                raw_data.extend(zip(tokenized_prems, tokenized_hypos, labels))
-                premises, hypotheses, labels = [], [], []
-
-    # 处理剩余数据
-    if premises:
-        tokenized_prems = list(nlp.pipe(premises))
-        tokenized_hypos = list(nlp.pipe(hypotheses))
-        raw_data.extend(zip(tokenized_prems, tokenized_hypos, labels))
-
-    return raw_data
-
-
-def build_word_2_index(raw_data: list[tuple]) -> tuple[dict[str, int], int]:
-    """
-    Build the word to index dictionary.
-    param:
-        raw_data: raw_data is like: [("this is the premise", "this is the hypothesis", "label")]
-    return:
-        word_2_index: dictionary {word: index},
-        vocab_size: number of vocabs (length of word_2_index)
-    """
-    word_2_index = {"<PAD>": 0, "<UNK>": 1}
-    for nli_pair in raw_data:
-        tokenized_premise = nli_pair[0]
-        tokenized_hypothesis = nli_pair[1]
-
-        for word in tokenized_premise:
-            word_2_index[word.text] = word_2_index.get(word.text, len(word_2_index))
-        for word in tokenized_hypothesis:
-            word_2_index[word.text] = word_2_index.get(word.text, len(word_2_index))
-
-    vocab_size = len(word_2_index)
-    return word_2_index, vocab_size
 
 
 def train_with_early_stopping(
@@ -177,31 +114,26 @@ def train_with_early_stopping(
 
 
 def main(
-        train_path: str,
-        test_path: str,
         batch_size: int,
-        sequence_length: int,
+        max_length: int,
         embedding_dim: int,
         hidden_size: int,
         epochs: int,
         learning_rate: float,
 ):
-    train_data = build_raw_data(train_path)
-    test_data = build_raw_data(test_path)
 
-    if os.path.exists("./word_to_index.json"):
-        with open("./word_to_index.json", "r") as f:
-            word_2_index = json.load(f)
-            vocab_size = len(word_2_index)
-    else:
-        word_2_index, vocab_size = build_word_2_index(train_data + test_data)
-        with open("word_to_index.json", "w", encoding='utf-8') as f:
-            json.dump(word_2_index, f)
+    snli_dataset = load_dataset("snli")
 
+    text_train_dataset = snli_dataset["train"]
+    text_test_dataset = snli_dataset["test"]
+
+    # 各项参数
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    vocab_size = tokenizer.vocab_size
 
-    train_dataset = TextDataset(train_data, word_2_index, sequence_length)
-    test_dataset = TextDataset(test_data, word_2_index, sequence_length)
+    train_dataset = NLIDataset(text_train_dataset, tokenizer, max_length)
+    test_dataset = NLIDataset(text_test_dataset, tokenizer, max_length)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size)
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
@@ -217,18 +149,8 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Natural Language Inference models.")
+    parser = argparse.ArgumentParser(description="Train ESIM Natural Language Inference models.")
 
-    parser.add_argument(
-        "train_path",
-        type=str,
-        help="Path to train data"
-    )
-    parser.add_argument(
-        "test_path",
-        type=str,
-        help="Path to test data"
-    )
     parser.add_argument(
         "-b",
         "--batch_size",
@@ -238,7 +160,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-s",
-        "--sequence_length",
+        "--max_length",
         type=int,
         help="Sequence length",
         default=64
@@ -274,20 +196,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    train_path = args.train_path
-    test_path = args.test_path
     batch_size = args.batch_size
-    sequence_length = args.sequence_length
+    max_length = args.max_length
     embedding_dim = args.embedding_dim
     hidden_size = args.hidden_size
     epochs = args.epochs
     learning_rate = args.learning_rate
 
     main(
-        train_path,
-        test_path,
         batch_size=batch_size,
-        sequence_length=sequence_length,
+        max_length=max_length,
         embedding_dim=embedding_dim,
         hidden_size=hidden_size,
         epochs=epochs,

@@ -33,9 +33,10 @@ def main():
     embedding_dim = 128
     hidden_size = 128
     sequence_length = 64
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = ESIMModel(vocab_size, embedding_dim, hidden_size)
-    model.load_state_dict(torch.load("./weights/ESIMModel_weights_83.9.pth", map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load("./weights/ESIMModel_weights_83.9.pth", map_location=device))
     prediction = predict(model,
                          "Storytelling is necessary for a more sustainable food system because it creates a "
                          "personal relationship and makes the product more appealing to consumers. It adds an element "

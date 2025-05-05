@@ -1,7 +1,5 @@
 import torch
 from torch.utils.data import Dataset
-from transformers import AutoTokenizer
-from datasets import load_dataset
 
 
 class NLIDataset(Dataset):
@@ -37,15 +35,17 @@ class NLIDataset(Dataset):
         )
 
         data = []
-        for pre_ids, hypo_ids, label in zip(premise_encodings['input_ids'], hypothesis_encodings['input_ids'], labels):
-            if label == -1:
+        for i in range(len(labels)):
+            if labels[i] == -1:
                 continue
 
-            data.append((
-                pre_ids,
-                hypo_ids,
-                torch.tensor(label)
-            ))
+            pre_ids = premise_encodings['input_ids'][i]
+            pre_mask = premise_encodings['attention_mask'][i]
+            hypo_ids = hypothesis_encodings['input_ids'][i]
+            hypo_mask = hypothesis_encodings['attention_mask'][i]
+            label = torch.tensor(labels[i])
+
+            data.append((pre_ids, pre_mask, hypo_ids, hypo_mask, label))
 
         return data
 
@@ -53,24 +53,7 @@ class NLIDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        premise_ids = self.data[idx][0]
-        hypothesis_ids = self.data[idx][1]
-        label = self.data[idx][2]
-        return premise_ids, hypothesis_ids, label
+        pre_ids, pre_mask, hypo_ids, hypo_mask, label = self.data[idx]
+        return pre_ids, pre_mask, hypo_ids, hypo_mask, label
 
 
-if __name__ == '__main__':
-    snli_dataset = load_dataset("snli")
-
-    train_dataset = snli_dataset["train"]
-    test_dataset = snli_dataset["test"]
-
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-
-    vocab_size = tokenizer.vocab_size
-    max_len = 64
-
-    dataset = NLIDataset(test_dataset, tokenizer, max_len)
-
-    for premise, hypothesis, label in dataset:
-        print(label)

@@ -60,11 +60,11 @@ def train_with_early_stopping(
         # Training phase
         model.train()
         train_loss, train_correct, train_total = 0, 0, 0
-        for pre, hypo, label in train_loader:
-            pre, hypo, label = pre.to(device), hypo.to(device), label.to(device)
+        for pre, pre_mask, hypo, hypo_mask, label in train_loader:
+            pre, pre_mask, hypo, hypo_mask, label = pre.to(device), pre_mask.to(device), hypo.to(device), hypo_mask.to(device), label.to(device)
 
             # Forward pass
-            outputs = model(pre, hypo)
+            outputs = model(pre, pre_mask, hypo, hypo_mask)
             loss = criterion(outputs, label)
 
             # Backward pass
@@ -81,11 +81,11 @@ def train_with_early_stopping(
         model.eval()
         test_loss, test_correct, test_total = 0, 0, 0
         with torch.no_grad():
-            for test_pre, test_hypo, test_label in test_loader:
-                test_pre, test_hypo, test_label = test_pre.to(device), test_hypo.to(device), test_label.to(device)
+            for test_pre, test_pre_mask, test_hypo, test_hypo_mask, test_label in test_loader:
+                test_pre, test_pre_mask, test_hypo, test_hypo_mask, test_label = test_pre.to(device), test_pre_mask.to(device), test_hypo.to(device), test_hypo_mask.to(device), test_label.to(device)
 
                 # Forward pass
-                outputs = model(test_pre, test_hypo)
+                outputs = model(test_pre, test_pre_mask, test_hypo, test_hypo_mask)
                 test_loss += criterion(outputs, test_label).item() * test_pre.size(0)
                 test_correct += (outputs.argmax(dim=1) == test_label).sum().item()
                 test_total += test_label.size(0)

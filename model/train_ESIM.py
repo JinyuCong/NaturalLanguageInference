@@ -6,6 +6,7 @@ from dataset import NLIDataset
 from datasets import load_dataset
 from transformers import AutoTokenizer
 import argparse
+import matplotlib.pyplot as plt
 
 
 class EarlyStopping:
@@ -56,15 +57,20 @@ def train_with_early_stopping(
     model.to(device)
     early_stopping = EarlyStopping(model, verbose=True)
 
+    train_losses = []
+    train_accs = []
+    test_losses = []
+    test_accs = []
+
     for epoch in range(epochs):
         # Training phase
         model.train()
         train_loss, train_correct, train_total = 0, 0, 0
         for pre, pre_mask, hypo, hypo_mask, label in train_loader:
-            pre, pre_mask, hypo, hypo_mask, label = pre.to(device), pre_mask.to(device), hypo.to(device), hypo_mask.to(device), label.to(device)
+            pre, hypo, label = pre.to(device), hypo.to(device), label.to(device)
 
             # Forward pass
-            outputs = model(pre, pre_mask, hypo, hypo_mask)
+            outputs = model(pre, hypo)
             loss = criterion(outputs, label)
 
             # Backward pass
@@ -82,10 +88,10 @@ def train_with_early_stopping(
         test_loss, test_correct, test_total = 0, 0, 0
         with torch.no_grad():
             for test_pre, test_pre_mask, test_hypo, test_hypo_mask, test_label in test_loader:
-                test_pre, test_pre_mask, test_hypo, test_hypo_mask, test_label = test_pre.to(device), test_pre_mask.to(device), test_hypo.to(device), test_hypo_mask.to(device), test_label.to(device)
+                test_pre, test_hypo, test_label = test_pre.to(device), test_hypo.to(device), test_label.to(device)
 
                 # Forward pass
-                outputs = model(test_pre, test_pre_mask, test_hypo, test_hypo_mask)
+                outputs = model(test_pre, test_hypo)
                 test_loss += criterion(outputs, test_label).item() * test_pre.size(0)
                 test_correct += (outputs.argmax(dim=1) == test_label).sum().item()
                 test_total += test_label.size(0)
@@ -95,6 +101,11 @@ def train_with_early_stopping(
         train_acc = train_correct / train_total
         test_loss = test_loss / test_total
         test_acc = test_correct / test_total
+
+        train_losses.append(train_loss)
+        train_accs.append(train_acc)
+        test_losses.append(test_loss)
+        test_accs.append(test_acc)
 
         # Print metrics
         print(
@@ -109,8 +120,22 @@ def train_with_early_stopping(
             print('Early stopping triggered.')
             break
 
+    plot_stat(train_losses, "esim train loss", "loss")
+    plot_stat(train_accs, "esim train accuracies", "accuracy")
+    plot_stat(test_losses, "esim test loss", "loss")
+    plot_stat(test_accs, "esim test accuracies", "accuracy")
+
     # Save best model weights
     torch.save(early_stopping.best_model_weights, f"./weights/{model._get_name()}_weights_{early_stopping.best_val_acc * 100:.2f}.pth")
+
+
+def plot_stat(stat: list, title: str, y_label: str) -> None:
+    plt.plot(stat)
+    plt.title(title)
+    plt.xlabel("Epoch")
+    plt.ylabel(y_label)
+    plt.savefig(f"./plots/{title}.png")
+    plt.show()
 
 
 def main(
@@ -120,21 +145,29 @@ def main(
         hidden_size: int,
         epochs: int,
         learning_rate: float,
+        snli_or_mnli: str
 ):
 
     snli_dataset = load_dataset("snli")
+    mnli_dataset = load_dataset("multi_nli")
 
-    text_train_dataset = snli_dataset["train"]
-    text_test_dataset = snli_dataset["test"]
+    if snli_or_mnli == "snli":
+        text_train_dataset = snli_dataset["train"]
+        text_test_dataset = snli_dataset["test"]
+    elif snli_or_mnli == "mnli":
+        text_train_dataset = mnli_dataset["train"]
+        text_test_dataset = mnli_dataset["validation_matched"]
 
-    # 各项参数
+    # hyper parameters
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vocab_size = tokenizer.vocab_size
 
+    # define train dataset and test dataset
     train_dataset = NLIDataset(text_train_dataset, tokenizer, max_length)
     test_dataset = NLIDataset(text_test_dataset, tokenizer, max_length)
 
+    # dataloader
     train_loader = DataLoader(train_dataset, batch_size=batch_size)
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
@@ -150,6 +183,15 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train ESIM Natural Language Inference models.")
+
+    parser.add_argument(
+        "-d",
+        "--dataset",
+        type=str,
+        choices=["snli", "mnli"],
+        help="Use snli dataset or mnli dataset to train",
+        default="snli"
+    )
 
     parser.add_argument(
         "-b",
@@ -196,6 +238,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    dataset = args.dataset
     batch_size = args.batch_size
     max_length = args.max_length
     embedding_dim = args.embedding_dim
@@ -209,5 +252,6 @@ if __name__ == "__main__":
         embedding_dim=embedding_dim,
         hidden_size=hidden_size,
         epochs=epochs,
-        learning_rate=learning_rate
+        learning_rate=learning_rate,
+        snli_or_mnli=dataset
     )

@@ -1,5 +1,7 @@
 import torch
 from torch.utils.data import Dataset
+from datasets import load_dataset
+from transformers import AutoTokenizer
 
 
 class NLIDataset(Dataset):
@@ -55,5 +57,16 @@ class NLIDataset(Dataset):
     def __getitem__(self, idx):
         pre_ids, pre_mask, hypo_ids, hypo_mask, label = self.data[idx]
         return pre_ids, pre_mask, hypo_ids, hypo_mask, label
+
+
+if __name__ == "__main__":
+    mnli_dataset = load_dataset("multi_nli")
+
+    raw_dataset = mnli_dataset['validation_matched']
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    max_len = 64
+
+    test_dataset = NLIDataset(raw_dataset, tokenizer, 64)
+    print(test_dataset[0])
 
 

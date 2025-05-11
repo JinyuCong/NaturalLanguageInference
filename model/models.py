@@ -9,7 +9,7 @@ class ESIMModel(nn.Module):
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.encoder = nn.LSTM(input_size=embedding_dim, hidden_size=hidden_size, bidirectional=True)
         self.inference_encoder = nn.LSTM(hidden_size * 8, hidden_size, bidirectional=True)
-        self.fc = nn.Linear(hidden_size * 8, 3)  # 3分类
+        self.fc = nn.Linear(hidden_size * 8, 3)
         self.act = nn.Tanh()
 
     def forward(self, premise, hypothesis):
@@ -35,7 +35,8 @@ class ESIMModel(nn.Module):
         v_b = torch.cat([v_b.max(dim=1)[0], v_b.mean(dim=1)], dim=1)
         v = torch.cat([v_a, v_b], dim=1)
 
-        logits = self.act(self.fc(v))
+        logits = self.act(self.fc(v))  # (hidden_size * 8, 3)
+
         return logits
 
 

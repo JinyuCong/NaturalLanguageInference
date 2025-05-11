@@ -59,14 +59,4 @@ class NLIDataset(Dataset):
         return pre_ids, pre_mask, hypo_ids, hypo_mask, label
 
 
-if __name__ == "__main__":
-    mnli_dataset = load_dataset("multi_nli")
-
-    raw_dataset = mnli_dataset['validation_matched']
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    max_len = 64
-
-    test_dataset = NLIDataset(raw_dataset, tokenizer, 64)
-    print(test_dataset[0])
-
 

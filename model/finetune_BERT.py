@@ -1,12 +1,11 @@
 import torch
 from torch.utils.data import DataLoader
-import torch.nn as nn
 from transformers import BertTokenizer, BertConfig, BertForSequenceClassification
 from transformers import get_linear_schedule_with_warmup
 from datasets import load_dataset
-from transformers import AutoTokenizer
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import argparse
 
 
 class EarlyStopping:
@@ -56,6 +55,9 @@ def train_with_early_stopping(
     model.to(device)
     early_stopping = EarlyStopping(model, verbose=True)
 
+    step_losses = []
+    epoch_accs = []
+
     for epoch in range(epochs):
         # Training phase
         model.train()
@@ -68,12 +70,15 @@ def train_with_early_stopping(
             outputs = model(**inputs)
             loss = outputs.loss
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()
             scheduler.step()
 
             # Metrics
             total_loss += loss.item()
+            step_losses.append(loss.item())
             progress_bar.set_postfix({'loss': loss.item()})
 
         avg_train_loss = total_loss / len(train_loader)
@@ -93,6 +98,7 @@ def train_with_early_stopping(
                 total_samples += inputs['labels'].size(0)
 
         accuracy = total_correct / total_samples
+        epoch_accs.append(accuracy)
         print(f"Validation Accuracy: {accuracy:.4f}")
 
         # Early stopping checking by test accuracy
@@ -101,14 +107,17 @@ def train_with_early_stopping(
             print('Early stopping triggered.')
             break
 
+    plot_stat(step_losses, f"Fine-tuned BERT per step losses on snli", "step", "loss")
+    plot_stat(epoch_accs, f"Fine-tuned BERT epoch accuracies on snli", "epoch", "accuracy")
+
     # Save best model weights
-    # torch.save(early_stopping.best_model_weights, f"./weights/{model._get_name()}_weights_{early_stopping.best_val_acc * 100:.2f}.pth")
+    torch.save(early_stopping.best_model_weights, f"./weights/{model._get_name()}_weights_{early_stopping.best_val_acc * 100:.2f}.pth")
 
 
-def plot_stat(stat: list, title: str, y_label: str) -> None:
+def plot_stat(stat: list, title: str, x_label: str, y_label: str) -> None:
     plt.plot(stat)
     plt.title(title)
-    plt.xlabel("Epoch")
+    plt.xlabel(x_label)
     plt.ylabel(y_label)
     plt.savefig(f"./plots/{title}.png")
     plt.show()
@@ -133,7 +142,7 @@ def main(
             return_tensors='pt'
         )
         encoding = {k: v.squeeze(0) for k, v in encoding.items()}
-        encoding['labels'] = torch.tensor(example['label'] if example['label'] != -1 else 0)
+        encoding['labels'] = torch.tensor(example['label'])
         return encoding
 
     snli_dataset = load_dataset("snli")
@@ -149,14 +158,25 @@ def main(
     train_data = train_data.with_format("torch", columns=["input_ids", "token_type_ids", "attention_mask", "labels"])
     valid_data = valid_data.with_format("torch", columns=["input_ids", "token_type_ids", "attention_mask", "labels"])
 
+    # bert模型的输入需要是这个格式的
+    # train_data:
+    # {
+    #   'input_ids': tensor([101 ... 102 ... 102 0 0 ...]),
+    #   'token_type_ids': tensor([0 0 ... 1 1 1 ... 0 0 ...])
+    #   'attention_mask': tensor([1 1 ... 0 0 ...])
+    #   'labels': tensor([0|1|2])
+    # }
+
     # dataloader
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
     valid_loader = DataLoader(valid_data, batch_size=batch_size)
 
     # define BERT model without pretrained
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    config = BertConfig.from_pretrained('bert-base-uncased', num_labels=3)
-    model = BertForSequenceClassification(config).to(device)
+    model = BertForSequenceClassification.from_pretrained(
+        "bert-base-uncased",
+        num_labels=3
+    ).to(device)
 
     # optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -171,9 +191,59 @@ def main(
 
 
 if __name__ == "__main__":
-    batch_size = 32
-    max_len = 128
-    epochs = 3
-    learning_rate = 2e-5
 
-    main(batch_size, max_len, epochs, learning_rate, "snli")
+    parser = argparse.ArgumentParser(description="Train ESIM Natural Language Inference models.")
+
+    parser.add_argument(
+        "-d",
+        "--dataset",
+        type=str,
+        choices=["snli", "mnli"],
+        help="Use snli dataset or mnli dataset to train",
+        default="snli"
+    )
+
+    parser.add_argument(
+        "-b",
+        "--batch_size",
+        type=int,
+        help="Batch size",
+        default=32
+    )
+    parser.add_argument(
+        "-s",
+        "--max_length",
+        type=int,
+        help="Sequence length",
+        default=128
+    )
+    parser.add_argument(
+        "-E",
+        "--epochs",
+        type=int,
+        help="Number of epochs",
+        default=3
+    )
+    parser.add_argument(
+        "-l",
+        "--learning_rate",
+        type=float,
+        help="Learning rate",
+        default=2e-5
+    )
+
+    args = parser.parse_args()
+
+    dataset = args.dataset
+    batch_size = args.batch_size
+    max_length = args.max_length
+    epochs = args.epochs
+    learning_rate = args.learning_rate
+
+    main(
+        batch_size=batch_size,
+        max_len=max_length,
+        epochs=epochs,
+        learning_rate=learning_rate,
+        snli_or_mnli=dataset
+    )

@@ -40,46 +40,49 @@ class ESIMModel(nn.Module):
         return logits
 
 
-class DecomposableAttentionModel(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, projected_dim, hidden_size, glove_embedding_matrix):
-        super(DecomposableAttentionModel, self).__init__()
-        # use the pretrained GloVe embedding matrix and freeze the learning
-        self.embedding = nn.Embedding.from_pretrained(glove_embedding_matrix, freeze=True)
-        # project the embedding matrix from dimension 300 to dimension 200
-        self.projection = nn.Linear(embedding_dim, projected_dim)
+class SelfAttentionEncoder(nn.Module):
+    def __init__(self, embedding_dim, num_heads):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(embedding_dim, num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(embedding_dim)
 
-        self.F = nn.Sequential(
-            nn.Linear(projected_dim, hidden_size),
-            nn.ReLU(),
-            nn.Dropout(0.2)
-        )
-        self.G = nn.Sequential(
-            nn.Linear(2*hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Dropout(0.2)
-        )
-        self.classifier = nn.Linear(2*hidden_size, 3)
+    def forward(self, x):
+        attn_out, _ = self.attn(x, x, x)
+        return self.norm(attn_out + x)
+
+
+class ESIMModelWithAttention(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, num_heads=4):
+        super(ESIMModelWithAttention, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.encoder = SelfAttentionEncoder(embedding_dim, num_heads)
+        self.inference_encoder = SelfAttentionEncoder(embedding_dim * 4, num_heads)
+        self.fc = nn.Linear(embedding_dim * 16, 3)
+        self.act = nn.Tanh()
 
     def forward(self, premise, hypothesis):
+
         a_emb = self.embedding(premise)  # (batch_size, seq_len, emb_dim)
         b_emb = self.embedding(hypothesis)
 
-        a_proj = self.projection(a_emb)  # (batch_size, seq_len, proj_dim)
-        b_proj = self.projection(b_emb)
+        a_encoded = self.encoder(a_emb)  # (batch_size, seq_len, 2*hidden_size)
+        b_encoded = self.encoder(b_emb)
 
-        a_bar = self.F(a_proj)  # (batch_size, seq_len, hidden_size)
-        b_bar = self.F(b_proj)
+        attn = torch.matmul(a_encoded, b_encoded.transpose(1, 2))  # (batch_size, a_len, b_len)
 
-        attn = torch.matmul(a_bar, b_bar.transpose(1, 2))  # (batch_size, seq_len, seq_len)
+        a_tilde = torch.matmul(F.softmax(attn, dim=2), b_encoded)
+        b_tilde = torch.matmul(F.softmax(attn, dim=1).transpose(1, 2), a_encoded)
 
-        beta = torch.matmul(torch.softmax(attn, dim=2), b_bar)  # (batch_size, seq_len, hidden_size)
-        alpha = torch.matmul(torch.softmax(attn, dim=1).transpose(1, 2), a_bar)
+        m_a = torch.cat([a_encoded, a_tilde, a_encoded - a_tilde, a_encoded * a_tilde], dim=2)
+        m_b = torch.cat([b_encoded, b_tilde, b_encoded - b_tilde, b_encoded * b_tilde], dim=2)
 
-        v_1 = self.G(torch.concat([a_bar, beta], dim=2))  # (batch_size, seq_len, hidden_size)
-        v_2 = self.G(torch.concat([b_bar, alpha], dim=2))
-        v_1 = torch.sum(v_1, dim=1)  # (batch_size, 1, hidden_size)
-        v_2 = torch.sum(v_2, dim=1)
+        v_a = self.inference_encoder(m_a)
+        v_b = self.inference_encoder(m_b)
 
-        # classifier
-        logits = self.classifier(torch.concat([v_1, v_2], dim=1))
+        v_a = torch.cat([v_a.max(dim=1)[0], v_a.mean(dim=1)], dim=1)
+        v_b = torch.cat([v_b.max(dim=1)[0], v_b.mean(dim=1)], dim=1)
+        v = torch.cat([v_a, v_b], dim=1)
+
+        logits = self.act(self.fc(v))  # (hidden_size * 8, 3)
+
         return logits

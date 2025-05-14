@@ -49,8 +49,17 @@ class Critic(nn.Module):
         return value
 
 
-def reward_fucntion(actions: torch.Tensor, true_labels: torch.Tensor):
+def reward_function(pred_logits, true_labels):
+    probs = F.softmax(pred_logits, dim=-1)
+    correct = (torch.argmax(probs, dim=-1) == true_labels).float()
+    confidence = probs.gather(1, true_labels.unsqueeze(1)).squeeze()  # 正确类别的概率
+    reward = correct * confidence  # 结合正确性和置信度
+    return reward
+
+'''
+def reward_function(actions: torch.Tensor, true_labels: torch.Tensor):
     return (actions == true_labels).to(torch.float32)
+'''
 
 
 def compute_policy_loss(log_probs, old_log_probs, advantages, clip_eps=0.2):
@@ -89,6 +98,7 @@ class Experience:
     premises_ids: torch.Tensor
     hypotheses_ids: torch.Tensor
     predictions: torch.Tensor
+    actions: torch.Tensor
     action_log_probs: torch.Tensor
     values: torch.Tensor
     returns: Optional[torch.Tensor]
@@ -126,10 +136,11 @@ def generate_samples(premises_ids,
 
 
 def compute_rewards(actions,
+                    logits,
                     true_labels,
                     action_log_probs,
                     ref_action_log_probs,
-                    kl_ctl=0.1,
+                    kl_ctl=0.01,
                     clip_reward_value=1.0):
     """
     Args:
@@ -139,7 +150,7 @@ def compute_rewards(actions,
         ref_action_log_probs: 旧模型预测的label的概率
         kl_ctl: float, KL coefficient
     """
-    r_ext = reward_fucntion(actions, true_labels)
+    r_ext = reward_function(logits, true_labels)
 
     kl = action_log_probs - ref_action_log_probs
     r_kl = -kl_ctl * kl
@@ -181,7 +192,7 @@ def generate_experiences(samples):
         # 计算价值
         values = critic_model(premises_ids, hypotheses_ids)
         # 计算奖励模型的奖励值
-        rewards = compute_rewards(actions, gold_labels, action_log_probs, ref_action_log_probs)
+        rewards = compute_rewards(actions, logits, gold_labels, action_log_probs, ref_action_log_probs)
         # 计算优势和回报
         advantages, returns = compute_advantages_and_returns(values, rewards)
 
@@ -189,6 +200,7 @@ def generate_experiences(samples):
         premises_ids=premises_ids,
         hypotheses_ids=hypotheses_ids,
         predictions=predictions,
+        actions=actions,
         action_log_probs=action_log_probs,
         values=values,
         returns=returns,
@@ -205,6 +217,7 @@ def train_step(experience: Experience, steps):
 
     premises_ids = experience.premises_ids
     hypotheses_ids = experience.hypotheses_ids
+    old_actions = experience.actions
     old_action_log_probs = experience.action_log_probs
     old_values = experience.values
     returns = experience.returns
@@ -212,8 +225,8 @@ def train_step(experience: Experience, steps):
 
     logits = policy_model(premises_ids, hypotheses_ids)
     log_probs = F.log_softmax(logits, dim=-1)
-    actions = torch.argmax(logits, dim=-1)
-    action_log_probs = log_probs.gather(dim=-1, index=actions.unsqueeze(-1)).squeeze(-1)
+    #actions = torch.argmax(logits, dim=-1)
+    action_log_probs = log_probs.gather(dim=-1, index=old_actions.unsqueeze(-1)).squeeze(-1)
 
     policy_loss = compute_policy_loss(action_log_probs, old_action_log_probs, advantages)
     policy_loss.backward()
@@ -233,7 +246,7 @@ def train():
     steps = 0
 
     for episode in range(episodes):
-        for pre_ids, pre_mask, hypo_ids, hypo_mask, labels in test_loader:
+        for pre_ids, pre_mask, hypo_ids, hypo_mask, labels in train_loader:
             # 生成样本
             sample = generate_samples(pre_ids, hypo_ids, labels, policy_model)
             # 生成经验（获取优势，奖励，回报等）
@@ -256,7 +269,7 @@ def train():
                 test_total += test_labels.size(0)
 
         test_accuracy = test_correct / test_total
-        print(f"episode [{episode}|{episodes}] test accuracy: {test_accuracy:}")
+        print(f"episode [{episode+1}|{episodes}] test accuracy: {test_accuracy*100:4f}%")
 
 
 if __name__ == "__main__":
@@ -269,7 +282,7 @@ if __name__ == "__main__":
     batch_size = 32
     embedding_dim = 128
     hidden_size = 128
-    lr = 5e-5
+    lr = 1e-5
 
     snli_dataset = load_dataset("snli")
     text_train_dataset = snli_dataset["train"]

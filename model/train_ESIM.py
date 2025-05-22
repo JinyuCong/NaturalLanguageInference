@@ -4,13 +4,13 @@ from torch.utils.data import Dataset, DataLoader
 from models import ESIMModel
 from dataset import NLIDataset
 from datasets import load_dataset
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModel
 import argparse
 import matplotlib.pyplot as plt
 
 
 class EarlyStopping:
-    def __init__(self, model, verbose, patience=5, delta=0):
+    def __init__(self, model, verbose, patience=2, delta=0):
         self.model = model
         self.patience = patience
         self.delta = delta
@@ -160,6 +160,9 @@ def main(
 
     # hyper parameters
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer.pad_token = tokenizer.eos_token
+    embedding_model = AutoModel.from_pretrained("gpt2")
+    pretrained_embedding = embedding_model.get_input_embeddings().weight
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vocab_size = tokenizer.vocab_size
 
@@ -174,9 +177,14 @@ def main(
     criterion = nn.CrossEntropyLoss()
 
     # define ESIM model
-    model = ESIMModel(vocab_size, embedding_dim, hidden_size)
+    model = ESIMModel(vocab_size, embedding_dim, hidden_size, pretrained_embedding)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    opt = torch.optim.Adam(
+        model.parameters(),
+        lr=learning_rate,
+        betas=(0.9, 0.999),
+        weight_decay=1e-5
+    )
 
     train_with_early_stopping(model, train_loader, test_loader, opt, device, epochs, criterion)
 
@@ -212,28 +220,28 @@ if __name__ == "__main__":
         "--embedding_dim",
         type=int,
         help="Embedding dimension",
-        default=128
+        default=768
     )
     parser.add_argument(
         "-w",
         "--hidden_size",
         type=int,
         help="Hidden size",
-        default=128
+        default=256
     )
     parser.add_argument(
         "-E",
         "--epochs",
         type=int,
         help="Number of epochs",
-        default=30
+        default=10
     )
     parser.add_argument(
         "-l",
         "--learning_rate",
         type=float,
         help="Learning rate",
-        default=1e-3
+        default=4e-4
     )
 
     args = parser.parse_args()

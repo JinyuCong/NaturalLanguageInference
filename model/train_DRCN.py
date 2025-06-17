@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from models import ESIMModel
-from dataset import NLIDataset, DRCNDataset
+from dataset import NLIDataset
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel, BertTokenizer
 import argparse
 import matplotlib.pyplot as plt
 
@@ -32,6 +32,15 @@ class EarlyStopping:
             self.best_val_acc = val_acc
             self.patience_counter = 0
             self.best_model_weights = self.model.state_dict().copy()
+
+
+def plot_stat(stat: list, title: str, y_label: str) -> None:
+    plt.plot(stat)
+    plt.title(title)
+    plt.xlabel("Epoch")
+    plt.ylabel(y_label)
+    plt.savefig(f"./plots/{title}.png")
+    plt.show()
 
 
 def train_with_early_stopping(
@@ -120,22 +129,13 @@ def train_with_early_stopping(
             print('Early stopping triggered.')
             break
 
-    plot_stat(train_losses, "esim train loss", "loss")
-    plot_stat(train_accs, "esim train accuracies", "accuracy")
-    plot_stat(test_losses, "esim test loss", "loss")
-    plot_stat(test_accs, "esim test accuracies", "accuracy")
+    plot_stat(train_losses, "DRCN train loss", "loss")
+    plot_stat(train_accs, "DRCN train accuracies", "accuracy")
+    plot_stat(test_losses, "DRCN test loss", "loss")
+    plot_stat(test_accs, "DRCN test accuracies", "accuracy")
 
     # Save best model weights
     torch.save(early_stopping.best_model_weights, f"./weights/{model._get_name()}_{dataset}_{early_stopping.best_val_acc * 100:.2f}.pth")
-
-
-def plot_stat(stat: list, title: str, y_label: str) -> None:
-    plt.plot(stat)
-    plt.title(title)
-    plt.xlabel("Epoch")
-    plt.ylabel(y_label)
-    plt.savefig(f"./plots/{title}.png")
-    plt.show()
 
 
 def main(
@@ -190,76 +190,8 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train ESIM Natural Language Inference models.")
+    snli_dataset = load_dataset("snli")
+    text_train_dataset, text_test_dataset = snli_dataset['train'], snli_dataset['test']
 
-    parser.add_argument(
-        "-d",
-        "--dataset",
-        type=str,
-        choices=["snli", "mnli"],
-        help="Use snli dataset or mnli dataset to train",
-        default="snli"
-    )
+    print(text_test_dataset[0])
 
-    parser.add_argument(
-        "-b",
-        "--batch_size",
-        type=int,
-        help="Batch size",
-        default=32
-    )
-    parser.add_argument(
-        "-s",
-        "--max_length",
-        type=int,
-        help="Sequence length",
-        default=64
-    )
-    parser.add_argument(
-        "-e",
-        "--embedding_dim",
-        type=int,
-        help="Embedding dimension",
-        default=768
-    )
-    parser.add_argument(
-        "-w",
-        "--hidden_size",
-        type=int,
-        help="Hidden size",
-        default=256
-    )
-    parser.add_argument(
-        "-E",
-        "--epochs",
-        type=int,
-        help="Number of epochs",
-        default=10
-    )
-    parser.add_argument(
-        "-l",
-        "--learning_rate",
-        type=float,
-        help="Learning rate",
-        default=4e-4
-    )
-
-    args = parser.parse_args()
-
-    dataset = args.dataset
-    batch_size = args.batch_size
-    max_length = args.max_length
-    embedding_dim = args.embedding_dim
-    hidden_size = args.hidden_size
-    epochs = args.epochs
-    learning_rate = args.learning_rate
-
-    main(
-        batch_size=batch_size,
-        max_length=max_length,
-        embedding_dim=embedding_dim,
-        hidden_size=hidden_size,
-        epochs=epochs,
-        learning_rate=learning_rate,
-        snli_or_mnli=dataset
-    )

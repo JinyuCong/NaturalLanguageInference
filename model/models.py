@@ -17,7 +17,6 @@ class ESIMModel(nn.Module):
         self.act = nn.Tanh()
 
     def forward(self, premise, hypothesis):
-
         a_emb = self.embedding(premise)  # (batch_size, seq_len, emb_dim)
         b_emb = self.embedding(hypothesis)
 
@@ -46,7 +45,7 @@ class ESIMModel(nn.Module):
         return logits
 
 
-# ESIM model LSTM replacement with multihead attention
+# ------------------------ESIM model LSTM replacement with multihead attention--------------------
 class PositionalEncoding(nn.Module):
     def __init__(self, seq_len, d_model):
         super(PositionalEncoding, self).__init__()
@@ -100,7 +99,6 @@ class ESIMModelWithAttention(nn.Module):
         self.dropout = nn.Dropout(0.3)
 
     def forward(self, premise, hypothesis):
-
         a_emb = self.embedding(premise)  # (batch_size, seq_len, emb_dim)
         b_emb = self.embedding(hypothesis)
 
@@ -128,3 +126,150 @@ class ESIMModelWithAttention(nn.Module):
         logits = self.dropout(self.fc(v))  # (hidden_size * 8, 3)
 
         return logits
+
+
+# ---------------------------------------DRCN model-----------------------------------------
+class CharCNN(torch.nn.Module):
+    def __init__(self, char_vocab_size, char_emb_dim, out_channels, kernel_size):
+        super(CharCNN, self).__init__()
+        self.char_emb = nn.Embedding(char_vocab_size, char_emb_dim)
+        self.conv = nn.Conv1d(in_channels=char_emb_dim, out_channels=out_channels, kernel_size=kernel_size)
+
+    def forward(self, x):
+        # x: (batch_size, seq_len, word_len)
+        batch_size, seq_len, word_len = x.shape
+        x = x.view(-1, word_len)  # (batch_size * seq_len, word_len) torch.Size([128, 32])
+        x = self.char_emb(x)  # (batch_size * seq_len, word_len, char_emb_dim) torch.Size([128, 32, 16])
+        x = torch.transpose(x, 1, 2)  # (batch_size * seq_len, char_emb_dim, word_len) torch.Size([128, 16, 32])
+        x = self.conv(x)  # (batch_size * seq_len, out_channels, L_out)
+        x = F.relu(x)
+        x = F.max_pool1d(x, kernel_size=x.size(2)).squeeze(
+            2)  # (batch_size * seq_len, out_channels) torch.Size([128, 32])
+        x = x.view(batch_size, seq_len, -1)  # (batch_size, seq_len, out_channels) torch.Size([2, 64, 32])
+        return x
+
+
+class MLPClassifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.2):
+        super(MLPClassifier, self).__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.dropout1 = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.dropout2 = nn.Dropout(dropout)
+        self.out = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = self.dropout1(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout2(x)
+        x = self.out(x)
+        return x  # 注意这里不要 softmax，交给 nn.CrossEntropyLoss 来做
+
+
+class DRCN(torch.nn.Module):
+    def __init__(self, word_vocab_size, word_emb_dim, char_vocab_size, char_emb_dim, char_out_channels,
+                 char_kernel_size,
+                 hidden_size, num_layers, pretrained_word_emb=None, trainable_emb=True):
+        super(DRCN, self).__init__()
+        # word embeddings
+        self.word_emb_fix = nn.Embedding(word_vocab_size, word_emb_dim)
+        self.word_emb_tr = nn.Embedding(word_vocab_size, word_emb_dim)
+
+        if pretrained_word_emb is not None:
+            self.word_emb_fix.weight.data.copy_(pretrained_word_emb)
+            self.word_emb_fix.weight.requires_grad = False
+            self.word_emb_tr.weight.data.copy_(pretrained_word_emb)
+            self.word_emb_tr.weight.requires_grad = trainable_emb
+
+        # Char CNN
+        self.char_cnn = CharCNN(char_vocab_size, char_emb_dim, char_out_channels, char_kernel_size)
+
+        # Densely connected Recurrent Networks
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+
+        self.rnn_layers = nn.ModuleList([
+            nn.LSTM(input_size=(2 * word_emb_dim + char_out_channels + 1) + l * (2*hidden_size + 2*hidden_size),
+                    hidden_size=hidden_size,
+                    num_layers=1,
+                    bidirectional=True,
+                    batch_first=True)
+            for l in range(num_layers)
+        ])
+
+    def forward(self, word_ids_p, word_ids_q, char_ids_p, char_ids_q, match_flag_p, match_flag_q):
+        # word_ids: (batch_size, seq_len); char_ids: (batch_size, seq_len, word_len)
+        # 处理句子p，也就是premise
+        word_emb_fix_p = self.word_emb_fix(word_ids_p)  # (batch_size, seq_len_p, word_emb_dim)
+        word_emb_tr_p = self.word_emb_tr(word_ids_p)  # (batch_size, seq_len_p, word_emb_dim)
+        char_emb_p = self.char_cnn(char_ids_p)  # (batch_size, seq_len_p, char_out_channels)
+        match_flag_p = match_flag_p.unsqueeze(-1).float()  # (batch_size, seq_len_p, 1)
+
+        rep_p = torch.concat([word_emb_tr_p, word_emb_fix_p, char_emb_p, match_flag_p], dim=-1)
+
+        # 处理句子q，也就是hypothesis
+        word_emb_fix_q = self.word_emb_fix(word_ids_q)
+        word_emb_tr_q = self.word_emb_tr(word_ids_q)
+        char_emb_q = self.char_cnn(char_ids_q)
+        match_flag_q = match_flag_q.unsqueeze(-1).float()
+
+        rep_q = torch.concat([word_emb_tr_q, word_emb_fix_q, char_emb_q, match_flag_q], dim=-1)
+
+        # ----- Densely Connected BiLSTM + Co-Attention -----
+        dense_p = rep_p
+        dense_q = rep_q
+
+        for rnn_layer in self.rnn_layers:
+            out_p, _ = rnn_layer(dense_p)  # (batch_size, seq_len_p, 2*hidden_size)
+            out_q, _ = rnn_layer(dense_q)  # (batch_size, seq_len_q, 2*hidden_size)
+
+            # Co-Attention 和 cosine similarity attention
+            attention_weights = F.cosine_similarity(out_p.unsqueeze(2), out_q.unsqueeze(1), dim=-1)
+            attn_p2q = F.softmax(attention_weights, dim=-1)  # (batch_size, seq_len_p, seq_len_q)
+            attn_q2p = F.softmax(attention_weights.transpose(1, 2), dim=-1)  # (batch_size, seq_len_q, seq_len_p)
+
+            context_p = torch.bmm(attn_p2q, out_q)  # (batch, seq_len_p, 2 * hidden_size)
+            context_q = torch.bmm(attn_q2p, out_p)  # (batch, seq_len_q, 2 * hidden_size)
+
+            # Dense connection: concatenate current layer output and co-attentive context
+            dense_p = torch.cat([dense_p, out_p, context_p], dim=-1)
+            dense_q = torch.cat([dense_q, out_q, context_q], dim=-1)
+
+        final_p = torch.max(dense_p, dim=1)[0]
+        final_q = torch.max(dense_q, dim=1)[0]
+
+        v = torch.concat([final_p, final_q, final_p + final_q, final_p - final_q, torch.abs(final_p - final_q)], dim=-1)
+
+        # classifier
+        cls = MLPClassifier(input_dim=v.size(1), hidden_dim=1000, output_dim=3)
+        logits = cls(v)
+
+        return logits
+
+
+if __name__ == '__main__':
+    batch_size = 16
+    seq_len_p = 30
+    seq_len_q = 28
+    word_len = 10
+    word_vocab_size = 5000
+    char_vocab_size = 100
+    word_emb_dim = 300
+    char_emb_dim = 16
+    char_out_channels = 32
+    char_kernel_size = 5
+    hidden_size = 100
+    num_layers = 5
+
+    model = DRCN(word_vocab_size, word_emb_dim, char_vocab_size, char_emb_dim, char_out_channels,
+                 char_kernel_size, hidden_size, num_layers)
+
+    word_ids_p = torch.randint(0, word_vocab_size, (batch_size, seq_len_p))
+    word_ids_q = torch.randint(0, word_vocab_size, (batch_size, seq_len_q))
+    char_ids_p = torch.randint(0, char_vocab_size, (batch_size, seq_len_p, word_len))
+    char_ids_q = torch.randint(0, char_vocab_size, (batch_size, seq_len_q, word_len))
+    match_flag_p = torch.randint(0, 2, (batch_size, seq_len_p))
+    match_flag_q = torch.randint(0, 2, (batch_size, seq_len_q))
+
+    model(word_ids_p, word_ids_q, char_ids_p, char_ids_q, match_flag_p, match_flag_q)

@@ -4,13 +4,13 @@ from torch.utils.data import Dataset, DataLoader
 from models import ESIMModelWithAttention
 from dataset import NLIDataset
 from datasets import load_dataset
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModel
 import argparse
 import matplotlib.pyplot as plt
 
 
 class EarlyStopping:
-    def __init__(self, model, verbose, patience=5, delta=0):
+    def __init__(self, model, verbose, patience=3, delta=0):
         self.model = model
         self.patience = patience
         self.delta = delta
@@ -159,25 +159,33 @@ def main(
 
     # hyper parameters
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer.pad_token = tokenizer.eos_token
+    embedding_model = AutoModel.from_pretrained("gpt2")
+    pretrained_embeddings = embedding_model.get_input_embeddings().weight
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vocab_size = tokenizer.vocab_size
 
     # define train dataset and test dataset
-    #train_dataset = NLIDataset(text_train_dataset, tokenizer, max_length)
+    train_dataset = NLIDataset(text_train_dataset, tokenizer, max_length)
     test_dataset = NLIDataset(text_test_dataset, tokenizer, max_length)
 
     # dataloader
-    #train_loader = DataLoader(train_dataset, batch_size=batch_size)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size)
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
     criterion = nn.CrossEntropyLoss()
 
     # define ESIM model
-    model = ESIMModelWithAttention(vocab_size, embedding_dim)
+    model = ESIMModelWithAttention(vocab_size, max_length, embedding_dim, pretrained_embeddings=pretrained_embeddings)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    opt = torch.optim.Adam(
+        model.parameters(),
+        lr=learning_rate,
+        betas=(0.9, 0.999),
+        weight_decay=1e-5
+    )
 
-    train_with_early_stopping(model, test_loader, test_loader, opt, device, epochs, criterion)
+    train_with_early_stopping(model, train_loader, test_loader, opt, device, epochs, criterion)
 
 
 if __name__ == "__main__":
@@ -211,21 +219,21 @@ if __name__ == "__main__":
         "--embedding_dim",
         type=int,
         help="Embedding dimension",
-        default=128
+        default=768
     )
     parser.add_argument(
         "-E",
         "--epochs",
         type=int,
         help="Number of epochs",
-        default=30
+        default=15
     )
     parser.add_argument(
         "-l",
         "--learning_rate",
         type=float,
         help="Learning rate",
-        default=1e-3
+        default=4e-4
     )
 
     args = parser.parse_args()

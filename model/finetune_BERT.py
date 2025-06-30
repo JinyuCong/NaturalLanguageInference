@@ -1,7 +1,9 @@
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
-from transformers import BertTokenizer, BertConfig, BertForSequenceClassification
+from transformers import BertTokenizer, BertConfig, BertForSequenceClassification, BertModel
 from transformers import get_linear_schedule_with_warmup
+from peft import get_peft_model, LoraConfig, TaskType
 from datasets import load_dataset
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -107,11 +109,11 @@ def train_with_early_stopping(
             print('Early stopping triggered.')
             break
 
-    plot_stat(step_losses, f"Fine-tuned BERT per step losses on snli", "step", "loss")
-    plot_stat(epoch_accs, f"Fine-tuned BERT epoch accuracies on snli", "epoch", "accuracy")
+    plot_stat(step_losses, f"Fine-tuned BERT per step losses on {dataset}", "step", "loss")
+    plot_stat(epoch_accs, f"Fine-tuned BERT epoch accuracies on {dataset}", "epoch", "accuracy")
 
     # Save best model weights
-    torch.save(early_stopping.best_model_weights, f"./weights/{model._get_name()}_weights_{early_stopping.best_val_acc * 100:.2f}.pth")
+    torch.save(early_stopping.best_model_weights, f"./weights/{model._get_name()}_{dataset}_{early_stopping.best_val_acc * 100:.2f}.pth")
 
 
 def plot_stat(stat: list, title: str, x_label: str, y_label: str) -> None:
@@ -176,7 +178,19 @@ def main(
     model = BertForSequenceClassification.from_pretrained(
         "bert-base-uncased",
         num_labels=3
-    ).to(device)
+    )
+
+    lora_config = LoraConfig(
+        task_type=TaskType.SEQ_CLS,
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.1,
+        bias="none",
+        target_modules=["query", "value"]
+    )
+
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
 
     # optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -191,7 +205,6 @@ def main(
 
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser(description="Train ESIM Natural Language Inference models.")
 
     parser.add_argument(

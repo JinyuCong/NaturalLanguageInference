@@ -158,6 +158,7 @@ def main(
         text_train_dataset = mnli_dataset["train"]
         text_test_dataset = mnli_dataset["validation_matched"]
 
+
     # hyper parameters
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -171,6 +172,7 @@ def main(
     train_loader = DataLoader(train_dataset, batch_size=batch_size)
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
+    '''
     criterion = nn.CrossEntropyLoss()
 
     # define ESIM model
@@ -179,7 +181,7 @@ def main(
     opt = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
     train_with_early_stopping(model, train_loader, test_loader, opt, device, epochs, criterion)
-
+    '''
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train ESIM Natural Language Inference models.")
